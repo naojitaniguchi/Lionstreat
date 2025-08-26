@@ -1,7 +1,7 @@
 ![Shader image](ShaderImage.png)
 小川糸さんの「ライオンのおやつ」を読んで書いた文章から生成したシェーダー。
 
-[ShaderToy](https://www.shadertoy.com/view/3cfyDr "ShaderToy")
+[ShaderToy](https://www.shadertoy.com/view/3fsyWs "ShaderToy")
 
 
 [Instagram Post](https://www.instagram.com/p/DLKc1wOy8-A/?utm_source=ig_web_copy_link&igsh=MzRlODBiNWFlZA== "Instagram Post")
