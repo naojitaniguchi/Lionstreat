@@ -1,0 +1,315 @@
+// "ライオンのおやつ" - 3Dフラクタルによる瀬戸内海の夕暮れと人生の儚さ
+// Inspired by "The Lion's Snack" by Ito Ogawa
+
+// 3Dフラクタルノイズ関数
+float hash(vec3 p) {
+    p = fract(p * 0.3183099 + 0.1);
+    p *= 17.0;
+    return fract(p.x * p.y * p.z * (p.x + p.y + p.z));
+}
+
+float noise(vec3 x) {
+    vec3 i = floor(x);
+    vec3 f = fract(x);
+    f = f * f * (3.0 - 2.0 * f);
+    
+    return mix(mix(mix(hash(i + vec3(0,0,0)), 
+                       hash(i + vec3(1,0,0)), f.x),
+                   mix(hash(i + vec3(0,1,0)), 
+                       hash(i + vec3(1,1,0)), f.x), f.y),
+               mix(mix(hash(i + vec3(0,0,1)), 
+                       hash(i + vec3(1,0,1)), f.x),
+                   mix(hash(i + vec3(0,1,1)), 
+                       hash(i + vec3(1,1,1)), f.x), f.y), f.z);
+}
+
+float fbm(vec3 p) {
+    float value = 0.0;
+    float freq = 1.0;
+    float amp = 0.5;
+    
+    for(int i = 0; i < 6; i++) {
+        value += noise(p * freq) * amp;
+        freq *= 2.0;
+        amp *= 0.5;
+    }
+    return value;
+}
+
+// 3D島の高さマップ
+float islandHeight(vec2 pos, float time) {
+    vec3 p = vec3(pos * 2.0, time * 0.1);
+    float height = fbm(p) * 0.8;
+    height += fbm(p * 2.0) * 0.4;
+    height += fbm(p * 4.0) * 0.2;
+    
+    // 島の基本形状
+    float dist = length(pos);
+    float mask = 1.0 - smoothstep(0.3, 0.8, dist);
+    
+    return height * mask - 0.3;
+}
+
+// 3D海の高さマップ
+float seaHeight(vec2 pos, float time) {
+    vec3 p = vec3(pos * 4.0, time * 0.5);
+    float waves = fbm(p) * 0.02;
+    waves += fbm(p * 3.0) * 0.01;
+    waves += fbm(p * 8.0) * 0.005;
+    
+    return waves;
+}
+
+// レイマーチング用の距離関数
+float map(vec3 pos, float time) {
+    float sea = pos.y - seaHeight(pos.xz, time);
+    
+    // 複数の島
+    float island1 = pos.y - islandHeight(pos.xz - vec2(-1.2, 0.2), time);
+    float island2 = pos.y - islandHeight(pos.xz - vec2(0.8, -0.1), time) * 1.2;
+    
+    float terrain = min(island1, island2);
+    
+    return min(sea, terrain);
+}
+
+// 法線計算
+vec3 getNormal(vec3 pos, float time) {
+    float eps = 0.01;
+    vec3 n = vec3(
+        map(pos + vec3(eps, 0, 0), time) - map(pos - vec3(eps, 0, 0), time),
+        map(pos + vec3(0, eps, 0), time) - map(pos - vec3(0, eps, 0), time),
+        map(pos + vec3(0, 0, eps), time) - map(pos - vec3(0, 0, eps), time)
+    );
+    return normalize(n);
+}
+
+void mainImage( out vec4 fragColor, in vec2 fragCoord )
+{
+    vec2 uv = fragCoord / iResolution.xy;
+    vec2 p = (fragCoord - 0.5 * iResolution.xy) / min(iResolution.x, iResolution.y);
+    
+    float time = iTime * 0.3;
+    
+    // カメラの設定
+    vec3 ro = vec3(0.0, 0.5, -2.0); // カメラ位置
+    vec3 ta = vec3(0.0, 0.0, 0.0);  // 注視点
+    vec3 ww = normalize(ta - ro);
+    vec3 uu = normalize(cross(ww, vec3(0, 1, 0)));
+    vec3 vv = normalize(cross(uu, ww));
+    vec3 rd = normalize(p.x * uu + p.y * vv + 1.5 * ww);
+    
+    // 空のグラデーション（夕暮れの色）
+    vec3 skyColor = mix(
+        vec3(1.0, 0.4, 0.2),  // 鮮やかな夕日のオレンジ・赤
+        vec3(0.2, 0.4, 0.9),  // 鮮やかな夕空の青
+        rd.y * 0.5 + 0.5
+    );
+    
+    // 中間色として紫を追加
+    if(rd.y > 0.0 && rd.y < 0.7) {
+        vec3 purpleColor = vec3(0.8, 0.3, 0.7);  // 鮮やかな紫
+        float purpleMix = sin(rd.y * 3.14159) * 0.6;
+        skyColor = mix(skyColor, purpleColor, purpleMix);
+    }
+    
+    // 太陽の位置と光
+    vec3 sunDir = normalize(vec3(0.7, 0.3, 0.5));
+    float sunDot = max(dot(rd, sunDir), 0.0);
+    vec3 sunColor = vec3(1.0, 0.7, 0.3) * pow(sunDot, 32.0);
+    
+    // レイマーチング
+    vec3 pos = ro;
+    float t = 0.0;
+    vec3 color = skyColor + sunColor;
+    
+    for(int i = 0; i < 64; i++) {
+        pos = ro + rd * t;
+        float d = map(pos, time);
+        
+        if(d < 0.001) {
+            // 地形に衝突
+            vec3 normal = getNormal(pos, time);
+            
+            // 島か海かを判定
+            bool isIsland = pos.y > seaHeight(pos.xz, time) + 0.01;
+            
+            if(isIsland) {
+                // 島の色（フラクタルテクスチャ）
+                vec3 p3d = vec3(pos.xz * 8.0, time * 0.2);
+                float vegetation = fbm(p3d);
+                vec3 islandColor = mix(
+                    vec3(0.2, 0.3, 0.2),  // 基本の緑
+                    vec3(0.6, 0.8, 0.4),  // 明るい緑（レモンの木）
+                    vegetation
+                );
+                
+                // ライティング
+                float diff = max(dot(normal, sunDir), 0.0);
+                float amb = 0.3;
+                color = islandColor * (diff + amb);
+            } else {
+                // 海の色（フラクタルで深度表現）
+                vec3 p3d = vec3(pos.xz * 6.0, time * 0.8);
+                float depth = fbm(p3d) * 0.5 + 0.5;
+                vec3 seaColor = mix(
+                    vec3(0.3, 0.7, 1.0),  // 明るい青い海
+                    vec3(0.6, 0.9, 1.0),  // とても明るい水色
+                    depth
+                );
+                
+                // 浅瀬のエメラルドグリーンを追加
+                float shallowWater = 1.0 - smoothstep(0.0, 0.3, length(pos.xz));
+                vec3 emeraldColor = vec3(0.4, 0.8, 0.7);
+                seaColor = mix(seaColor, emeraldColor, shallowWater * 0.4);
+                
+                // 反射
+                vec3 refl = reflect(rd, normal);
+                float fresnel = pow(1.0 - max(dot(-rd, normal), 0.0), 2.0);
+                
+                // フラクタルスパークル
+                vec3 sparklePos = vec3(pos.xz * 20.0, time * 2.0);
+                float sparkles = fbm(sparklePos) * fbm(sparklePos * 2.0);
+                sparkles = pow(max(sparkles - 0.7, 0.0), 3.0) * 10.0;
+                
+                // 太陽の反射
+                float sunRefl = pow(max(dot(refl, sunDir), 0.0), 16.0);
+                
+                color = seaColor + vec3(1.0, 0.8, 0.6) * sunRefl * 0.8;
+                color += vec3(1.2, 1.0, 0.8) * sparkles;
+                color = mix(color, skyColor, fresnel * 0.3);
+            }
+            break;
+        }
+        
+        if(t > 10.0) break;
+        t += max(d * 0.8, 0.01);
+    }
+    
+    // 雲（フラクタル）
+    vec3 cloudPos = vec3(p * 2.0, time * 0.1 + 5.0);
+    float clouds = fbm(cloudPos) * fbm(cloudPos * 0.5);
+    clouds = smoothstep(0.4, 0.8, clouds) * 0.6;
+    color = mix(color, vec3(1.0, 0.95, 0.9), clouds);
+    
+    // 記憶の粒子（フラクタルスター）
+    vec3 starPos = vec3(p * 30.0, time * 0.05);
+    float stars = fbm(starPos);
+    stars = pow(max(stars - 0.8, 0.0), 4.0) * 5.0;
+    color += vec3(0.9, 0.9, 1.0) * stars * 0.3;
+    
+    // 3D光のパーティクル効果
+    float particles = 0.0;
+    float bigParticles = 0.0;
+    
+    // 小さな光のパーティクル（密集）
+    for(int i = 0; i < 60; i++) {
+        float fi = float(i);
+        
+        // 3D空間での位置（フラクタルベース）
+        vec3 particleBasePos = vec3(
+            sin(fi * 12.34 + time * 0.8) * 2.5,
+            cos(fi * 7.89 + time * 0.6) * 1.5 + 0.5,
+            sin(fi * 9.12 + time * 0.7) * 2.0
+        );
+        
+        // フラクタルノイズによる微細な動き
+        vec3 noiseOffset = vec3(
+            fbm(vec3(fi * 0.1, time * 0.3, 0.0)) * 0.3,
+            fbm(vec3(fi * 0.15, time * 0.25, 1.0)) * 0.2,
+            fbm(vec3(fi * 0.12, time * 0.28, 2.0)) * 0.3
+        );
+        
+        vec3 particlePos = particleBasePos + noiseOffset;
+        
+        // カメラからの距離
+        float distFromCamera = length(particlePos - ro);
+        
+        // スクリーン投影
+        vec3 particleDir = normalize(particlePos - ro);
+        float particleDot = dot(rd, particleDir);
+        
+        if(particleDot > 0.9875 && distFromCamera > 0.5) {
+            // パーティクルのサイズ（距離による減衰）
+            float particleSize = 0.005 / distFromCamera;
+            
+            // 点滅効果（複数の周波数）
+            float twinkle = sin(time * 4.0 + fi * 2.1) * 0.5 + 0.5;
+            twinkle *= sin(time * 6.0 + fi * 1.7) * 0.5 + 0.5;
+            twinkle *= sin(time * 8.0 + fi * 3.3) * 0.5 + 0.5;
+            twinkle = pow(twinkle, 0.3);
+            
+            // 太陽の光による影響
+            float sunInfluence = max(dot(particleDir, sunDir), 0.0);
+            sunInfluence = pow(sunInfluence, 2.0) * 0.8 + 0.2;
+            
+            // パーティクルの輝度
+            float particleIntensity = (1.0 - smoothstep(0.9875, 1.0, particleDot));
+            particleIntensity *= twinkle * sunInfluence;
+            
+            particles += particleIntensity;
+        }
+    }
+    
+    // 大きな光のパーティクル（まばら）
+    for(int i = 0; i < 20; i++) {
+        float fi = float(i);
+        
+        // より大きな軌道での動き
+        vec3 bigParticlePos = vec3(
+            sin(fi * 23.45 + time * 0.4) * 4.0,
+            cos(fi * 16.78 + time * 0.3) * 2.5 + 1.0,
+            sin(fi * 19.67 + time * 0.35) * 3.5
+        );
+        
+        // フラクタルによる複雑な軌道
+        vec3 complexMotion = vec3(
+            fbm(vec3(fi * 0.08, time * 0.15, 0.0)) * 0.8,
+            fbm(vec3(fi * 0.1, time * 0.12, 1.0)) * 0.6,
+            fbm(vec3(fi * 0.09, time * 0.18, 2.0)) * 0.7
+        );
+        
+        bigParticlePos += complexMotion;
+        
+        float distFromCamera = length(bigParticlePos - ro);
+        vec3 bigParticleDir = normalize(bigParticlePos - ro);
+        float bigParticleDot = dot(rd, bigParticleDir);
+        
+        if(bigParticleDot > 0.98 && distFromCamera > 0.8) {
+            float bigParticleSize = 0.0125 / distFromCamera;
+            
+            // ゆっくりとした大きな点滅
+            float bigTwinkle = sin(time * 2.0 + fi * 3.7) * 0.5 + 0.5;
+            bigTwinkle *= sin(time * 1.5 + fi * 2.3) * 0.5 + 0.5;
+            bigTwinkle = pow(bigTwinkle, 0.2);
+            
+            float sunInfluence = max(dot(bigParticleDir, sunDir), 0.0);
+            sunInfluence = pow(sunInfluence, 1.5) * 0.9 + 0.1;
+            
+            float bigParticleIntensity = (1.0 - smoothstep(0.98, 1.0, bigParticleDot));
+            bigParticleIntensity *= bigTwinkle * sunInfluence;
+            
+            bigParticles += bigParticleIntensity;
+        }
+    }
+    
+    // パーティクルの色を追加
+    particles = clamp(particles, 0.0, 3.0);
+    bigParticles = clamp(bigParticles, 0.0, 2.0);
+    
+    color += vec3(1.2, 1.0, 0.8) * particles * 0.8;  // 小さな金色のパーティクル
+    color += vec3(1.5, 1.2, 0.9) * bigParticles * 1.2;  // 大きな温かい光のパーティクル
+    
+    // 大気遠近法
+    float depth = t / 10.0;
+    color = mix(color, skyColor, smoothstep(0.0, 1.0, depth));
+    
+    // 温かみのある調整
+    color *= vec3(1.1, 1.0, 0.9);
+    
+    // ビネット効果
+    float vignette = 1.0 - length(p) * 0.3;
+    color *= vignette;
+    
+    fragColor = vec4(color, 1.0);
+}
